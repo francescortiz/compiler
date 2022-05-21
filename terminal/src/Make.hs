@@ -30,7 +30,7 @@ import qualified Reporting.Exit as Exit
 import qualified Reporting.Task as Task
 import qualified Stuff
 import Terminal (Parser(..))
-
+import qualified Data.Name as Name
 
 
 -- FLAGS
@@ -244,7 +244,10 @@ generate :: Reporting.Style -> FilePath -> B.Builder -> NE.List ModuleName.Raw -
 generate style target builder names =
   Task.io $
     do  Dir.createDirectoryIfMissing True (FP.takeDirectory target)
+        putStrLn "JSESSSICAAAA!!!"
+        putStrLn target
         File.writeBuilder target builder
+        putStrLn "COCOOO!!!"
         Reporting.reportGenerate style names target
 
 

@@ -571,7 +571,8 @@ data Status
 crawlModule :: Map.Map ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> IO (Maybe Status)
 crawlModule foreignDeps mvar pkg src docsStatus name =
   do  let path = src </> ModuleName.toFilePath name <.> "elm"
-      exists <- File.exists path
+      putStrLn ("JASON: " ++ path)
+      exists <- return (False)
       case Map.lookup name foreignDeps of
         Just ForeignAmbiguous ->
           return Nothing
@@ -585,7 +586,7 @@ crawlModule foreignDeps mvar pkg src docsStatus name =
           if exists then
             crawlFile foreignDeps mvar pkg src docsStatus name path
 
-          else if Pkg.isKernel pkg && Name.isKernel name then
+          else if Pkg.isTrusted pkg && Name.isKernel name then
             crawlKernel foreignDeps mvar pkg src name
 
           else

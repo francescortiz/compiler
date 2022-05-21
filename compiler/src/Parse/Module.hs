@@ -3,7 +3,7 @@
 module Parse.Module
   ( fromByteString
   , ProjectType(..)
-  , isKernel
+  , canHaveKernelCode
   , chompImports
   , chompImport
   )
@@ -54,11 +54,25 @@ isCore projectType =
     Application -> False
 
 
-isKernel :: ProjectType -> Bool
-isKernel projectType =
+canHaveKernelCode :: ProjectType -> Bool
+canHaveKernelCode projectType =
   case projectType of
-    Package pkg -> Pkg.isKernel pkg
-    Application -> False
+    Package pkg -> Pkg.isTrusted pkg
+    Application -> True
+
+
+canHaveEffects :: ProjectType -> Bool
+canHaveEffects projectType =
+  case projectType of
+    Package pkg -> Pkg.isTrusted pkg
+    Application -> True
+
+
+canHaveInfixes :: ProjectType -> Bool
+canHaveInfixes projectType =
+  case projectType of
+    Package pkg -> Pkg.isTrusted pkg
+    Application -> True
 
 
 
@@ -78,7 +92,7 @@ chompModule :: ProjectType -> Parser E.Module Module
 chompModule projectType =
   do  header <- chompHeader
       imports <- chompImports (if isCore projectType then [] else Imports.defaults)
-      infixes <- if isKernel projectType then chompInfixes [] else return []
+      infixes <- if canHaveInfixes projectType then chompInfixes [] else return []
       decls <- specialize E.Declarations $ chompDecls []
       return (Module header imports infixes decls)
 
@@ -129,7 +143,7 @@ checkEffects projectType ports effects =
             _:_ -> Right (Src.Ports ports)
 
     Manager region manager ->
-      if isKernel projectType then
+      if canHaveEffects projectType then
         case ports of
           []  -> Right (Src.Manager region manager)
           _:_ -> Left (E.UnexpectedPort region)

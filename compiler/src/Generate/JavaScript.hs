@@ -11,7 +11,6 @@ import Prelude hiding (cycle, print)
 import qualified Data.ByteString.Builder as B
 import Data.Monoid ((<>))
 import qualified Data.List as List
-import Data.Map ((!))
 import qualified Data.Map as Map
 import qualified Data.Name as Name
 import qualified Data.Set as Set
@@ -30,6 +29,7 @@ import qualified Generate.Mode as Mode
 import qualified Reporting.Doc as D
 import qualified Reporting.Render.Type as RT
 import qualified Reporting.Render.Type.Localizer as L
+import qualified Debug.Trace
 
 
 
@@ -45,13 +45,16 @@ generate mode (Opt.GlobalGraph graph _) mains =
   let
     state = Map.foldrWithKey (addMain mode graph) emptyState mains
   in
-  "(function(scope){\n'use strict';"
-  <> Functions.functions
-  <> perfNote mode
-  <> stateToBuilder state
-  <> toMainExports mode mains
-  <> "}(this));"
-
+  case stateToBuilder state of
+    Right stateBuilder ->
+      "(function(scope){\n'use strict';"
+      <> Functions.functions
+      <> perfNote mode
+      <> stateBuilder
+      <> toMainExports mode mains
+      <> "}(this));"
+    Left errorBuilder ->
+      errorBuilder
 
 addMain :: Mode.Mode -> Graph -> ModuleName.Canonical -> Opt.Main -> State -> State
 addMain mode graph home _ state =
@@ -86,10 +89,14 @@ generateForRepl ansi localizer (Opt.GlobalGraph graph _) home name (Can.Forall _
     debugState = addGlobal mode graph emptyState (Opt.Global ModuleName.debug "toString")
     evalState = addGlobal mode graph debugState (Opt.Global home name)
   in
-  "process.on('uncaughtException', function(err) { process.stderr.write(err.toString() + '\\n'); process.exit(1); });"
-  <> Functions.functions
-  <> stateToBuilder evalState
-  <> print ansi localizer home name tipe
+  case stateToBuilder evalState of
+    Right stateBuilder ->
+      "process.on('uncaughtException', function(err) { process.stderr.write(err.toString() + '\\n'); process.exit(1); });"
+      <> Functions.functions
+      <> stateBuilder
+      <> print ansi localizer home name tipe
+    Left errorBuilder ->
+      errorBuilder
 
 
 print :: Bool -> L.Localizer -> ModuleName.Canonical -> Name.Name -> Can.Type -> B.Builder
@@ -122,9 +129,13 @@ generateForReplEndpoint localizer (Opt.GlobalGraph graph _) home maybeName (Can.
     debugState = addGlobal mode graph emptyState (Opt.Global ModuleName.debug "toString")
     evalState = addGlobal mode graph debugState (Opt.Global home name)
   in
-  Functions.functions
-  <> stateToBuilder evalState
-  <> postMessage localizer home maybeName tipe
+  case stateToBuilder evalState of
+    Right stateBuilder ->
+      Functions.functions
+      <> stateBuilder
+      <> postMessage localizer home maybeName tipe
+    Left errorBuilder ->
+      errorBuilder
 
 
 postMessage :: L.Localizer -> ModuleName.Canonical -> Maybe Name.Name -> Can.Type -> B.Builder
@@ -153,6 +164,7 @@ data State =
     , _revBuilders :: [B.Builder]
     , _seenGlobals :: Set.Set Opt.Global
     }
+  | ErrorState B.Builder
 
 
 emptyState :: State
@@ -160,9 +172,11 @@ emptyState =
   State mempty [] Set.empty
 
 
-stateToBuilder :: State -> B.Builder
-stateToBuilder (State revKernels revBuilders _) =
-  prependBuilders revKernels (prependBuilders revBuilders mempty)
+stateToBuilder :: State -> Either B.Builder B.Builder
+stateToBuilder state@(State revKernels revBuilders _) =
+  Right $ prependBuilders revKernels (prependBuilders revBuilders mempty)
+stateToBuilder state@(ErrorState error) =
+  Left error
 
 
 prependBuilders :: [B.Builder] -> B.Builder -> B.Builder
@@ -181,6 +195,8 @@ addGlobal mode graph state@(State revKernels builders seen) global =
   else
     addGlobalHelp mode graph global $
       State revKernels builders (Set.insert global seen)
+addGlobal mode graph state@(ErrorState error) global =
+  ErrorState error
 
 
 addGlobalHelp :: Mode.Mode -> Graph -> Opt.Global -> State -> State
@@ -189,59 +205,63 @@ addGlobalHelp mode graph global state =
     addDeps deps someState =
       Set.foldl' (addGlobal mode graph) someState deps
   in
-  case graph ! global of
-    Opt.Define expr deps ->
-      addStmt (addDeps deps state) (
-        var global (Expr.generate mode expr)
-      )
+  case Map.lookup global graph of
+    Nothing ->
+      ErrorState "Could no build JavaScript. `Map.lookup global graph` failed." -- TODO: show an error and abort.
+    Just result ->
+      case result of
+        Opt.Define expr deps ->
+          addStmt (addDeps deps state) (
+            var global (Expr.generate mode expr)
+          )
 
-    Opt.DefineTailFunc argNames body deps ->
-      addStmt (addDeps deps state) (
-        let (Opt.Global _ name) = global in
-        var global (Expr.generateTailDef mode name argNames body)
-      )
+        Opt.DefineTailFunc argNames body deps ->
+          addStmt (addDeps deps state) (
+            let (Opt.Global _ name) = global in
+            var global (Expr.generateTailDef mode name argNames body)
+          )
 
-    Opt.Ctor index arity ->
-      addStmt state (
-        var global (Expr.generateCtor mode global index arity)
-      )
+        Opt.Ctor index arity ->
+          addStmt state (
+            var global (Expr.generateCtor mode global index arity)
+          )
 
-    Opt.Link linkedGlobal ->
-      addGlobal mode graph state linkedGlobal
+        Opt.Link linkedGlobal ->
+          addGlobal mode graph state linkedGlobal
 
-    Opt.Cycle names values functions deps ->
-      addStmt (addDeps deps state) (
-        generateCycle mode global names values functions
-      )
+        Opt.Cycle names values functions deps ->
+          addStmt (addDeps deps state) (
+            generateCycle mode global names values functions
+          )
 
-    Opt.Manager effectsType ->
-      generateManager mode graph global effectsType state
+        Opt.Manager effectsType ->
+          generateManager mode graph global effectsType state
 
-    Opt.Kernel chunks deps ->
-      if isDebugger global && not (Mode.isDebug mode) then
-        state
-      else
-        addKernel (addDeps deps state) (generateKernel mode chunks)
+        Opt.Kernel chunks deps ->
+          if isDebugger global && not (Mode.isDebug mode) then
+            state
+          else
+            addKernel (addDeps deps state) (generateKernel mode chunks)
 
-    Opt.Enum index ->
-      addStmt state (
-        generateEnum mode global index
-      )
+        Opt.Enum index ->
+          addStmt state (
+            generateEnum mode global index
+          )
 
-    Opt.Box ->
-      addStmt (addGlobal mode graph state identity) (
-        generateBox mode global
-      )
+        Opt.Box ->
+          addStmt (addGlobal mode graph state identity) (
+            generateBox mode global
+          )
 
-    Opt.PortIncoming decoder deps ->
-      addStmt (addDeps deps state) (
-        generatePort mode global "incomingPort" decoder
-      )
+        Opt.PortIncoming decoder deps ->
+          addStmt (addDeps deps state) (
+            generatePort mode global "incomingPort" decoder
+          )
 
-    Opt.PortOutgoing encoder deps ->
-      addStmt (addDeps deps state) (
-        generatePort mode global "outgoingPort" encoder
-      )
+        Opt.PortOutgoing encoder deps ->
+          addStmt (addDeps deps state) (
+            generatePort mode global "outgoingPort" encoder
+          )
 
 
 addStmt :: State -> JS.Stmt -> State
@@ -250,13 +270,21 @@ addStmt state stmt =
 
 
 addBuilder :: State -> B.Builder -> State
-addBuilder (State revKernels revBuilders seen) builder =
-  State revKernels (builder:revBuilders) seen
+addBuilder state builder =
+  case state of
+    State revKernels revBuilders seen ->
+      State revKernels (builder:revBuilders) seen
+    ErrorState error ->
+      ErrorState error
 
 
 addKernel :: State -> B.Builder -> State
-addKernel (State revKernels revBuilders seen) kernel =
-  State (kernel:revKernels) revBuilders seen
+addKernel state kernel =
+  case state of
+    State revKernels revBuilders seen ->
+      State (kernel:revKernels) revBuilders seen
+    ErrorState error ->
+      ErrorState error
 
 
 var :: Opt.Global -> Expr.Code -> JS.Stmt

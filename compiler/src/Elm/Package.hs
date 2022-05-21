@@ -5,7 +5,7 @@ module Elm.Package
   , Author
   , Project
   , Canonical(..)
-  , isKernel
+  , isTrusted
   , toChars
   , toUrl
   , toFilePath
@@ -80,9 +80,9 @@ data Canonical =
 -- HELPERS
 
 
-isKernel :: Name -> Bool
-isKernel (Name author _) =
-  author == elm || author == elm_explorations
+isTrusted :: Name -> Bool
+isTrusted (Name author _) =
+  True --author == elm || author == elm_explorations
 
 
 toChars :: Name -> String

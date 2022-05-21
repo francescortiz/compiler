@@ -189,7 +189,6 @@ fromPaths :: Reporting.Style -> FilePath -> Details.Details -> NE.List FilePath 
 fromPaths style root details paths =
   Reporting.trackBuild style $ \key ->
   do  env <- makeEnv key root details
-
       elroots <- findRoots env paths
       case elroots of
         Left problem ->
@@ -211,12 +210,21 @@ fromPaths style root details paths =
                 Right foreigns ->
                   do  -- compile
                       rmvar <- newEmptyMVar
+                      putStrLn "1!!!!!!!!!"
                       resultsMVars <- forkWithKey (checkModule env foreigns rmvar) statuses
+                      putStrLn "2!!!!!!!!!"
                       putMVar rmvar resultsMVars
+                      putStrLn "3!!!!!!!!!"
                       rrootMVars <- traverse (fork . checkRoot env resultsMVars) sroots
+                      putStrLn "4!!!!!!!!!"
                       results <- traverse readMVar resultsMVars
+                      putStrLn "5!!!!!!!!!"
                       writeDetails root details results
-                      toArtifacts env foreigns results <$> traverse readMVar rrootMVars
+                      putStrLn "6!!!!!!!!!"
+                      a <- toArtifacts env foreigns results <$> traverse readMVar rrootMVars
+                      putStrLn "7!!!!!!!!!"
+                      return a
+
 
 
 
@@ -302,7 +310,7 @@ crawlModule env@(Env _ root projectType srcDirs buildID locals foreigns) mvar do
                   return $ SBadImport $ Import.AmbiguousForeign dep d ds
 
             Nothing ->
-              if Name.isKernel name && Parse.isKernel projectType then
+              if Name.isKernel name && Parse.canHaveKernelCode projectType then
                 do  exists <- File.exists ("src" </> ModuleName.toFilePath name <.> "js")
                     return $ if exists then SKernel else SBadImport Import.NotFound
               else
